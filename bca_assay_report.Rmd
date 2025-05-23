@@ -1,0 +1,201 @@
+---
+title: "BCA assay report"
+date: "`r format(Sys.time(), '%d/%m/%Y')`"
+output: 
+  html_document:
+    theme: flatly
+    css: style.css
+params:
+  data:
+    label: "Upload data file (.xlsx):"
+    input: file
+    value: NULL
+  anno:
+    label: "Upload annotation file (.xlsx):"
+    input: file
+    value: NULL
+  assay:
+    label: "Type of assay:"
+    input: select
+    value: prot
+    choices: [prot, pep]
+  bc:
+    label: "Position of BC:"
+    input: select
+    value: A1
+    choices: [A1, B2, B3, H5, H6]
+    multiple: TRUE
+  bs:
+    label: "Position of BS:"
+    input: select
+    value: 'B1'
+    choices: [A1, B2, B3, H3, H4]
+    multiple: TRUE
+  dil:
+    label: "Dilution:"
+    input: numeric
+    value: 5
+---
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE,
+                      fig.align = "center")
+```
+
+```{r}
+# Load libraries
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(ggpmisc)
+```
+
+```{r}
+# Load data
+df <- read_excel(params$data,
+                 skip = 23) %>% 
+  janitor::clean_names() %>% 
+  rename(pos_row = x)
+
+meta <- read_excel(params$anno) %>% 
+  mutate(pos_col = paste0('x', pos_col))
+
+
+# Choose concentrations depending on assay
+
+concs <- switch(params$assay,
+                "prot" = c(2, 1.5, 1, 0.75, 0.5, 0.25, 0.125, 0.025),
+                "pep" = c(1, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625, 0))
+
+```
+
+```{r}
+# Handle BC and BS
+# BC
+bc_pos <- params$bc
+
+bc_list <- list()
+
+for (i in 1:length(bc_pos)){
+  
+  foo <- unlist(strsplit(bc_pos[i], ""))
+  
+  foo_mod <- ifelse(grepl("[0-9]", foo), paste0('x', foo), foo)
+  
+  bc_list[[i]] <- df %>% 
+    select(pos_row, any_of(foo_mod[2])) %>% 
+    filter(pos_row %in% foo_mod[1]) %>% 
+    pull(any_of(foo_mod[2]))
+  
+}
+
+bc <- mean(unlist(bc_list))
+
+
+# BS
+
+bs_pos <- params$bs
+
+bs_list <- list()
+
+for (i in 1:length(bs_pos)){
+  
+  foo <- unlist(strsplit(bs_pos[i], ""))
+  
+  foo_mod <- ifelse(grepl("[0-9]", foo), paste0('x', foo), foo)
+  
+  bs_list[[i]] <- df %>% 
+    select(pos_row, any_of(foo_mod[2])) %>% 
+    filter(pos_row %in% foo_mod[1]) %>% 
+    pull(any_of(foo_mod[2]))
+  
+}
+
+bs <- mean(unlist(bs_list))
+```
+
+The following options were selected:
+
+* Type of assay: **`r params$assay`**
+* BC cells: **`r params$bc`** – with mean of `r round(bc, 3)`
+* BS cells: **`r params$bs`** – with mean of `r round(bs, 3)`
+* Dilution: **`r params$dil`** (note: if no dilution was performed, insert 1)
+
+---
+
+<br>
+
+The standard curve dataset is the following:
+
+```{r}
+# Calculate first the dataset for standard curve
+df_od <- df %>%
+  rowwise() %>%
+  summarise(od = mean(c(x1, x2))) %>%
+  mutate(conc = concs,
+         blanked_od = od - bc, 
+         blanked_od = case_when(blanked_od < 0 ~ 0,
+                                .default = blanked_od)) %>% 
+  relocate(conc, .before = 1)
+
+df_od %>% 
+  mutate(across(where(is.numeric), ~ round(., 3))) %>% 
+  kableExtra::kbl() %>%
+  kableExtra::kable_paper("hover", full_width = F)
+```
+
+<br>
+
+Which yields the following plot and equation:
+
+<br>
+
+```{r fig.align='center', fig.height=4, fig.width=6.5}
+# Calculate standard curve
+coefs <- lm(blanked_od ~ conc, data = df_od)$coefficients
+
+# Plot
+df_od %>%
+  ggplot(aes(conc, blanked_od)) +
+  stat_poly_line(se = F,
+                 linetype = 3) +
+  stat_poly_eq(use_label(c("eq", "R2"))) +
+  geom_point() +
+  theme_bw() +
+  labs(x = "Concentration (ug/uL)",
+       y = "Blanked OD")
+```
+
+<br>
+
+Lastly, each of the steps to calculate the concentration of the samples of interest is depicted in the table below:
+
+<br>
+
+```{r}
+# Calculate final sample concentrations
+df %>%
+  tidyr::pivot_longer(!pos_row,
+                      names_to = "pos_col",
+                      values_to = "od") %>%
+  right_join(meta, by = c("pos_col", "pos_row")) %>%
+  arrange(pos_col, pos_row) %>%
+  select(sample, od) %>%
+  mutate(blanked_od = od - bs,
+         conc_dil = (blanked_od - coefs[1]) / coefs[2],
+         prot_conc_stock = conc_dil * params$dil,
+         in_100_ul = prot_conc_stock * 100) %>% 
+  mutate(across(where(is.numeric), ~ round(., 2))) %>% 
+  kableExtra::kbl() %>%
+  kableExtra::kable_paper("hover", full_width = F)
+```
+
+---
+
+<div class="autor-pie">
+  Prado Lab - Patricia MB (2025)
+</div>
