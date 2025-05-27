@@ -57,7 +57,7 @@ library(ggpmisc)
 ```{r}
 # Load data
 df <- read_excel(params$data,
-                 skip = 23) %>% 
+                 range = "A24:M32") %>% 
   janitor::clean_names() %>% 
   rename(pos_row = x)
 
